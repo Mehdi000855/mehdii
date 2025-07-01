@@ -2,55 +2,53 @@ name: BlueGreenECSDeploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 env:
   AWS_REGION: us-east-1
   ECS_CLUSTER: webapp-cluster
   ECS_SERVICE: webapp-service
-  ECS_TASK_DEFINITION: dirane-2120052-task-webapp
-  DOCKER_IMAGE: mehdyyy/webapp
-  IMAGE_TAG: latest
+  APP_NAME: WebAppECSApp
+  DEPLOYMENT_GROUP: WebAppDeploymentGroup
+  S3_BUCKET: mehdyy-codedeploy-bucket
+  IMAGE_URI: mehdyyy/webapp:latest
 
 jobs:
   deploy:
+    name: Deploy to ECS (Blue/Green)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::837369895208:role/GitHubActionsDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Build Docker image
-        run: docker build -t $DOCKER_IMAGE:$IMAGE_TAG .
-
-      - name: Push Docker image
-        run: docker push $DOCKER_IMAGE:$IMAGE_TAG
-
-      - name: Register new ECS task definition
+      - name: Update image in taskdef.json
         run: |
-          sed -e "s|\"image\": \".*\"|\"image\": \"$DOCKER_IMAGE:$IMAGE_TAG\"|" taskdef.json > taskdef-updated.json
-          aws ecs register-task-definition \
-            --cli-input-json file://taskdef-updated.json
+          sed -i "s|mehdyyy/webapp:latest|${{ env.IMAGE_URI }}|g" taskdef.json
 
-      - name: Deploy ECS service with new task definition
+      - name: Register new task definition
+        id: task
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
 
+      - name: Update appspec.yml
+        run: sed -i "s|REPLACEME|$TASK_DEF_ARN|g" appspec.yml
 
+      - name: Upload appspec to S3
+        run: aws s3 cp appspec.yml s3://${{ env.S3_BUCKET }}/appspec.yml
+
+      - name: Create deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name ${{ env.APP_NAME }} \
+            --deployment-group-name ${{ env.DEPLOYMENT_GROUP }} \
+            --s3-location bucket=${{ env.S3_BUCKET }},key=appspec.yml,bundleType=YAML \
+            --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
+            --file-exists-behavior OVERWRITE
