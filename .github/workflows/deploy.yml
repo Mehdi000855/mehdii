@@ -1,4 +1,4 @@
-name: Deploy to Amazon ECS
+name: Deploy to AWS ECS
 
 on:
   push:
@@ -7,40 +7,47 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  IMAGE_REPO_NAME: mehdispace
+  ECS_CLUSTER: webapp-cluster
+  ECS_SERVICE: webapp-service
+  IMAGE_REPO_NAME: webapp
   IMAGE_TAG: latest
+  CONTAINER_NAME: webapp
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v3
+    - name: 📦 Cloner le dépôt
+      uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: 🔐 Connexion à DockerHub
+      run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v1
+    - name: 🛠️ Construire l’image Docker
+      run: |
+        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_REPO_NAME }}:${{ env.IMAGE_TAG }} .
 
-      - name: Build Docker image
-        run: |
-          docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
-          docker tag $IMAGE_REPO_NAME:$IMAGE_TAG ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+    - name: 📤 Pousser l’image Docker
+      run: |
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_REPO_NAME }}:${{ env.IMAGE_TAG }}
 
-      - name: Push Docker image to ECR
-        run: |
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+    - name: 📄 Mettre à jour le taskdef.json avec la nouvelle image
+      run: |
+        sed -i "s|image\": \".*\"|image\": \"${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_REPO_NAME }}:${{ env.IMAGE_TAG }}\"|g" taskdef.json
 
-      - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: taskdef.json
-          service: webapp-service      # <--- Remplace par ton nom de service ECS
-          cluster: webapp-cluster      # <--- Remplace par ton nom de cluster ECS
-          image: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+    - name: ☁️ Configurer les identifiants AWS
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: 🚀 Déployer sur ECS
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: taskdef.json
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+
